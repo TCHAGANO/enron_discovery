@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block title %}Recherche avancée - Enron Discovery{% endblock %}
+
+{% block extra_css %}
+<style>
+    mark { background: #fff3a3; padding: 0 2px; }
+    .snippet { font-size: .9rem; color: #444; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container py-4">
+    <h1 class="mb-4">🔍 Recherche avancée</h1>
+
+    <form method="get" class="row g-3 mb-2">
+        <div class="col-md-6">
+            <label class="form-label small text-muted" for="q">Mots-clés</label>
+            <input type="text" id="q" name="q" class="form-control" placeholder='ex : "raptor" OR ljm -lunch' value="{{ q }}">
+        </div>
+        <div class="col-md-3">
+            <label class="form-label small text-muted" for="sender">Expéditeur</label>
+            <input type="text" id="sender" name="sender" class="form-control" placeholder="ex : kenneth.lay" value="{{ sender }}">
+        </div>
+        <div class="col-md-3">
+            <label class="form-label small text-muted" for="recipient">Destinataire (To, Cc, Bcc)</label>
+            <input type="text" id="recipient" name="recipient" class="form-control" placeholder="ex : skilling" value="{{ recipient }}">
+        </div>
+        <div class="col-md-3">
+            <label class="form-label small text-muted" for="mailbox">Boîte mail</label>
+            <select id="mailbox" name="mailbox" class="form-select">
+                <option value="">Toutes</option>
+                {% for mb in mailboxes %}
+                <option value="{{ mb }}" {% if mb == mailbox %}selected{% endif %}>{{ mb }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-md-2">
+            <label class="form-label small text-muted" for="date_from">Du</label>
+            <input type="date" id="date_from" name="date_from" class="form-control" value="{{ date_from }}">
+        </div>
+        <div class="col-md-2">
+            <label class="form-label small text-muted" for="date_to">Au</label>
+            <input type="date" id="date_to" name="date_to" class="form-control" value="{{ date_to }}">
+        </div>
+        <div class="col-md-3 d-flex align-items-end">
+            <div class="form-check mb-2">
+                <input class="form-check-input" type="checkbox" value="1" id="attachments" name="attachments" {% if has_attachments %}checked{% endif %}>
+                <label class="form-check-label" for="attachments">Avec pièces jointes</label>
+            </div>
+        </div>
+        <div class="col-md-2 d-flex align-items-end">
+            <button type="submit" class="btn btn-primary w-100">Rechercher</button>
+        </div>
+    </form>
+    <p class="small text-muted mb-4">
+        Syntaxe : <code>"phrase exacte"</code>, <code>mot1 OR mot2</code>, <code>-exclure</code>.
+    </p>
+
+    {% for error in errors %}
+    <div class="alert alert-warning">{{ error }}</div>
+    {% endfor %}
+
+    {% if search_hint %}
+    <div class="alert alert-info">{{ search_hint }}</div>
+    {% endif %}
+
+    <p class="text-muted">{{ total_results }} résultat(s) trouvé(s)</p>
+
+    <div class="list-group">
+        {% for email in emails %}
+        <div class="list-group-item list-group-item-action d-flex justify-content-between align-items-start">
+            <div class="ms-2 me-auto">
+                <div class="fw-bold">{{ email.subject|default:"(Sans sujet)" }}</div>
+                <small class="text-muted">
+                    De : {{ email.from_employee.email|default:"Inconnu" }} |
+                    Date : {{ email.date|date:"d M Y H:i"|default:"Inconnue" }}
+                    {% if email.folder %}| {{ email.folder }}{% endif %}
+                </small>
+                {% if email.snippet %}<div class="snippet mt-1">{{ email.snippet }}</div>{% endif %}
+            </div>
+            <a href="{% url 'enron:thread_detail' email.id %}" class="btn btn-sm btn-outline-primary">Voir le thread</a>
+        </div>
+        {% empty %}
+        <div class="alert alert-info">Aucun email trouvé.</div>
+        {% endfor %}
+    </div>
+
+    {% if enable_pagination and has_previous or enable_pagination and has_next %}
+    <nav aria-label="Pagination" class="mt-4">
+        <ul class="pagination justify-content-center">
+            {% if has_previous %}
+            <li class="page-item"><a class="page-link" href="?{% if base_query %}{{ base_query }}&amp;{% endif %}page={{ previous_page }}">Précédent</a></li>
+            {% else %}
+            <li class="page-item disabled"><span class="page-link">Précédent</span></li>
+            {% endif %}
+
+            <li class="page-item disabled"><span class="page-link">Page {{ current_page }}</span></li>
+
+            {% if has_next %}
+            <li class="page-item"><a class="page-link" href="?{% if base_query %}{{ base_query }}&amp;{% endif %}page={{ next_page }}">Suivant</a></li>
+            {% else %}
+            <li class="page-item disabled"><span class="page-link">Suivant</span></li>
+            {% endif %}
+        </ul>
+    </nav>
+    {% endif %}
+</div>
+{% endblock %}

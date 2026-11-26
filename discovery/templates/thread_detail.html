@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Détail du thread - Enron Discovery{% endblock %}
+
+{% block content %}
+<div class="container py-4">
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="{% url 'enron:home' %}">Accueil</a></li>
+            <li class="breadcrumb-item"><a href="{% url 'enron:search_emails' %}">Recherche</a></li>
+            <li class="breadcrumb-item active" aria-current="page">Thread</li>
+        </ol>
+    </nav>
+
+    <div class="card mb-4">
+        <div class="card-header bg-white">
+            <h3 class="mb-0">{{ selected.subject|default:"(Sans sujet)" }}</h3>
+        </div>
+        <div class="card-body">
+            <p class="mb-1"><strong>De :</strong> {{ selected.from_employee.name }} &lt;{{ selected.from_employee.email|default:"Inconnu" }}&gt;</p>
+            <p class="mb-1"><strong>Date :</strong> {{ selected.date|date:"d M Y H:i"|default:"Inconnue" }}</p>
+            <p class="mb-1"><strong>À :</strong> {{ selected.to_employees.all|join:", "|default:"Aucun" }}</p>
+            {% if selected.cc_employees.all %}<p class="mb-1"><strong>Cc :</strong> {{ selected.cc_employees.all|join:", " }}</p>{% endif %}
+            {% if selected.folder %}<p class="mb-1"><strong>Dossier :</strong> {{ selected.folder }}</p>{% endif %}
+            {% if selected.attachments.all %}
+            <p class="mb-1"><strong>Pièces jointes :</strong>
+                {% for att in selected.attachments.all %}<span class="badge bg-secondary me-1">{{ att.filename }}{% if att.size %} ({{ att.size|filesizeformat }}){% endif %}</span>{% endfor %}
+            </p>
+            {% endif %}
+            <hr>
+            <div class="border p-3 bg-light" style="white-space: pre-wrap;">{{ selected.body|default:"(Corps vide)" }}</div>
+        </div>
+    </div>
+
+    <h4 class="mb-1">Conversation complète</h4>
+    <p class="text-muted small mb-3">
+        {{ conversation|length }} message(s) distinct(s){% if selected.thread %}, du {{ selected.thread.started_at|date:"d M Y" }} au {{ selected.thread.last_activity|date:"d M Y" }}{% endif %}.
+        Le décalage indique à quel message chacun répond.
+    </p>
+    <div class="list-group">
+        {% for email in conversation %}
+        <div class="list-group-item {% if email.id == selected.id %}list-group-item-primary{% endif %}"
+             style="margin-left: {% widthratio email.depth 1 24 %}px; border-left: 3px solid {% if email.depth %}#adb5bd{% else %}#0d6efd{% endif %};">
+            <div class="d-flex w-100 justify-content-between">
+                <h6 class="mb-1"><a href="{% url 'enron:thread_detail' email.id %}" class="text-decoration-none">{{ email.subject|default:"(Sans sujet)" }}</a></h6>
+                <small>{{ email.date|date:"d M Y H:i"|default:"Date inconnue" }}</small>
+            </div>
+            <p class="mb-1"><strong>{{ email.from_employee.email|default:"Inconnu" }}</strong></p>
+            <p class="mb-1" style="white-space: pre-wrap;">{{ email.body|default:""|truncatechars:1500 }}</p>
+        </div>
+        {% empty %}
+        <div class="alert alert-warning">Aucun message dans ce thread.</div>
+        {% endfor %}
+    </div>
+</div>
+{% endblock %}

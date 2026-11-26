@@ -33,7 +33,7 @@
                     <div class="fw-bold">{{ email.subject|default:"(Sans sujet)" }}</div>
                     <small class="text-muted">
                         De : {{ email.from_employee.email|default:"Inconnu" }} |
-                        {{ email.to_employees.all|length }} destinataire(s) |
+                        {{ email.recipient_count }} destinataire(s) |
                         {{ email.date|date:"d M Y H:i"|default:"Date inconnue" }}
                     </small>
                 </div>
