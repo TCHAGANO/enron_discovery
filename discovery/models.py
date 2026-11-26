@@ -14,15 +14,41 @@ class Employee(models.Model):
         return self.email
 
 
-class Folder(models.Model): 
+class Folder(models.Model):
     """
-    Dossier / répertoire dans la boîte mail (inbox, sent, etc.).
-    Pour classer les emails et les  retrouver rapidement 
+    Dossier d'une boite mail (inbox, sent, etc.).
+
+    `path` est le chemin relatif dans le maildir (ex: "lay-k/inbox") et
+    identifie le dossier de facon unique ; `mailbox` est la boite mail
+    proprietaire (ex: "lay-k") et `name` le dernier element du chemin.
     """
     name = models.CharField(max_length=200)
+    mailbox = models.CharField(max_length=200, blank=True, db_index=True)
+    path = models.CharField(max_length=500, unique=True)
+
+    class Meta:
+        ordering = ["path"]
 
     def __str__(self):
-        return self.name
+        return self.path or self.name
+
+
+class Thread(models.Model):
+    """
+    Conversation reconstruite (commande `build_threads`), a partir des
+    en-tetes In-Reply-To quand ils existent, sinon du sujet normalise et des
+    participants.
+    """
+    normalized_subject = models.CharField(max_length=500, blank=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    last_activity = models.DateTimeField(null=True, blank=True)
+    email_count = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        ordering = ["-last_activity"]
+
+    def __str__(self):
+        return self.normalized_subject or f"Thread {self.pk}"
 
 
 class Email(models.Model):
@@ -35,6 +61,8 @@ class Email(models.Model):
     # métadonnées principales
     date = models.DateTimeField(null=True, blank=True)
     subject = models.TextField(blank=True)
+    # sujet sans RE:/FW:, en minuscules (sert a regrouper les conversations)
+    normalized_subject = models.CharField(max_length=500, blank=True, db_index=True)
     body = models.TextField(blank=True)
 
     # expéditeur (un seul)
@@ -68,7 +96,19 @@ class Email(models.Model):
         blank=True,
         on_delete=models.SET_NULL,
         related_name="replies",
-    ) 
+    )
+    # valeur brute de l'en-tete In-Reply-To, resolue apres l'import
+    in_reply_to_header = models.CharField(max_length=500, blank=True)
+    # True si in_reply_to a ete deduit par build_threads (et non lu dans l'en-tete)
+    in_reply_to_inferred = models.BooleanField(default=False)
+
+    thread = models.ForeignKey(
+        Thread,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="emails",
+    )
 
     # dossier de classement
     folder = models.ForeignKey(
@@ -84,6 +124,13 @@ class Email(models.Model):
 
     def __str__(self):
         return self.subject[:50] if self.subject else "No subject"
+
+    def save(self, *args, **kwargs):
+        if self.subject and not self.normalized_subject:
+            from .parsing import normalize_subject
+
+            self.normalized_subject = normalize_subject(self.subject)[:500]
+        super().save(*args, **kwargs)
 
     class Meta:
         ordering = ["-date"]

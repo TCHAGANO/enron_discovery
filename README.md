@@ -30,40 +30,31 @@ enron_discovery/
 ├── docker-compose.yml
 ├── manage.py
 ├── requirements.txt
-├── README.md
-├── .gitignore
-├── enron_mail_20150507.tar.gz
-├── data/
-├── maildir/                               # non versionne (corpus)
+├── .env.example                           # modele de configuration (copier en .env)
 ├── scripts/
-│   ├── import_enron.py                    # scripts exploratoires
-│   └── parse_email.ipynb                  # usage Pandas exploratoire
-├── polls/
-│   ├── admin.py
-│   ├── apps.py
-│   ├── models.py
-│   ├── urls.py
-│   ├── views.py
-│   ├── tests.py
-│   ├── migrations/
-│   │   ├── 0001_initial.py
-│   │   ├── 0002_...
-│   │   ├── 0003_...
-│   │   └── 0004_...
-│   ├── management/
-│   │   └── commands/
-│   │       └── import_enron.py            # commande principale d'import
-│   └── templates/
-│       ├── dashboard.html
-│       ├── search.html
-│       ├── thread_detail.html
-│       └── influence.html                 # optionnel
+│   └── parse_email.ipynb                  # exploration Pandas
+├── discovery/                             # application Django (label "polls")
+│   ├── models.py                          # Employee, Folder, Thread, Email, Attachment
+│   ├── parsing.py                         # parsing pur des emails (teste isolement)
+│   ├── search.py                          # FTS : indexation, requetes, surlignage
+│   ├── threads.py                         # reconstruction des conversations
+│   ├── graph.py                           # graphe d'influence + PageRank
+│   ├── views.py / urls.py / admin.py
+│   ├── management/commands/
+│   │   ├── import_enron.py                # import par lots
+│   │   ├── build_threads.py               # reconstruit les conversations
+│   │   └── rebuild_search_index.py        # recalcule l'index plein texte
+│   ├── templates/
+│   └── tests/                             # vues, parsing, import, graphe
 └── enron_discovery/
-	├── settings.py
-	├── urls.py
-	├── asgi.py
-	└── wsgi.py
+    ├── settings.py                        # lit .env / variables d'environnement
+    └── urls.py
 ```
+
+L'application s'appelait `polls` (heritage du tutoriel Django). Le paquet
+Python est maintenant `discovery`, mais son label reste `polls` : les tables
+(`polls_email`...) et l'historique des migrations des bases existantes sont
+conserves, aucune reimportation n'est necessaire.
 
 ## 4. Modelisation SQL (MCD logique)
 
@@ -74,7 +65,12 @@ enron_discovery/
 - `name`
 
 #### Folder
-- `name`
+- `path` (unique, ex: `lay-k/inbox`)
+- `mailbox` (boite mail proprietaire, ex: `lay-k`)
+- `name` (ex: `inbox`)
+
+#### Thread
+- `normalized_subject`, `started_at`, `last_activity`, `email_count`
 
 #### Email
 - `message_id` (unique)
@@ -85,7 +81,9 @@ enron_discovery/
 - `to_employees` (M2M -> Employee)
 - `cc_employees` (M2M -> Employee)
 - `bcc_employees` (M2M -> Employee)
-- `in_reply_to` (FK recursive -> Email)
+- `normalized_subject` (sujet sans RE:/FW:, indexe)
+- `in_reply_to` (FK recursive -> Email), `in_reply_to_header`, `in_reply_to_inferred`
+- `thread` (FK -> Thread)
 - `folder` (FK -> Folder)
 - `search_vector` (FTS)
 
@@ -107,16 +105,28 @@ enron_discovery/
 
 ## 5. Ingestion et parsing
 
-Commande principale: `polls/management/commands/import_enron.py`
+Commande principale: `python manage.py import_enron --path /chemin/vers/maildir`
 
-Fonctionnalites:
-- parcours recursif des `.eml`
-- extraction `From`, `To`, `Cc`, `Bcc`, `Date`, `Subject`, `Message-ID`, `In-Reply-To`
-- nettoyage du corps (encodage + suppression basique signatures/disclaimers)
-- creation des dossiers, collaborateurs, emails, pieces jointes
-- reconstruction des threads (`in_reply_to`)
-- mise a jour FTS (`search_vector`)
-- import idempotent/incremental (pas de reimport inutile)
+- parcours recursif du maildir ; le dossier garde la boite mail d'origine (`lay-k/inbox`)
+- extraction `From` (et nom complet via `X-From`), `To`, `Cc`, `Bcc`, `Date`, `Subject`, `Message-ID`, `In-Reply-To`
+- decodage selon le charset declare, nettoyage du corps (messages cites, signatures, mentions legales ; les blocs "Forwarded by" sont conserves)
+- insertion **par lots** (`bulk_create`) avec cache memoire des employes et dossiers : quelques requetes par lot au lieu de plusieurs dizaines par email (environ 18 fois plus rapide sur nos essais)
+- index plein texte calcule en une seule requete a la fin (sujet poids A, corps poids B, configuration `english`)
+- reconstruction des conversations a la fin (voir ci-dessous)
+- import idempotent/incremental : les Message-ID deja en base sont ignores. Sans Message-ID, l'identifiant de repli est le chemin du fichier.
+
+Options : `--batch-size 1000`, `--limit N`, `--skip-threads`, `--skip-index`.
+
+### Reconstruction des conversations
+
+Le corpus Enron ne contient presque jamais d'en-tete `In-Reply-To`.
+`python manage.py build_threads` (lance automatiquement apres l'import) :
+
+1. resout les en-tetes `In-Reply-To` en SQL, une fois tout importe (l'ordre d'import n'a plus d'importance) ;
+2. regroupe les emails de meme sujet normalise qui partagent au moins un participant et sont espaces de moins de 60 jours ;
+3. deduit le parent de chaque reponse : le message precedent dont l'expediteur etait destinataire, sinon le dernier message du fil. Les copies d'un meme email dans plusieurs boites ne sont pas comptees comme des reponses.
+
+La commande est idempotente ; les liens deduits sont marques `in_reply_to_inferred`.
 
 ## 6. Installation et execution
 
@@ -141,12 +151,23 @@ docker compose up -d
 docker compose ps
 ```
 
-### 3) Appliquer les migrations Django
+### 3) Configurer et appliquer les migrations
 
 ```bash
-python manage.py makemigrations
+cp .env.example .env      # puis adapter les valeurs
 python manage.py migrate
 ```
+
+### Base deja importee avec l'ancienne version ?
+
+```bash
+python manage.py migrate                  # ajoute les nouvelles colonnes, sans reimport
+python manage.py rebuild_search_index     # index plein texte en configuration english
+python manage.py build_threads            # conversations
+```
+
+Les dossiers deja importes gardent leur ancien nom (sans la boite mail) ;
+une reimportation dans une base vide est necessaire pour profiter du filtre par boite mail.
 
 ### 4) Importer les emails
 
@@ -160,12 +181,12 @@ python manage.py import_enron --path /chemin/vers/maildir
 python manage.py runserver
 ```
 
-Configuration PostgreSQL (`docker-compose.yml` + `settings.py`) :
-- DB: `enron_db`
-- User: `enron`
-- Password: `enron2026`
-- Host: `127.0.0.1`
-- Port hote: `5433`
+Configuration : toutes les valeurs sont lues dans `.env` (voir `.env.example`) :
+`DJANGO_SECRET_KEY`, `DJANGO_DEBUG`, `DJANGO_ALLOWED_HOSTS`, `POSTGRES_*`,
+`STATS_CACHE_SECONDS`, `SEARCH_CONFIG`, `DJANGO_CACHE_LOCATION`.
+Les valeurs par defaut correspondent au `docker-compose.yml` (base `enron_db`,
+utilisateur `enron`, port hote `5433`). Avec `DJANGO_DEBUG=False`,
+`DJANGO_SECRET_KEY` est obligatoire.
 
 ## 7. URLs principales
 
@@ -178,29 +199,31 @@ Configuration PostgreSQL (`docker-compose.yml` + `settings.py`) :
 ## 8. Fonctionnalites web (cahier des charges)
 
 ### Dashboard global
-- volume des emails par mois
-- top 10 expediteurs les plus actifs
+- volume des emails par mois, top 10 expediteurs
+- statistiques mises en cache (`STATS_CACHE_SECONDS`, 10 min par defaut)
 
 ### Moteur de recherche avancee
-- recherche par mots-cles (FTS PostgreSQL)
-- filtre expediteur
-- filtre plage de dates
-- pagination des resultats
+- recherche plein texte PostgreSQL, syntaxe type moteur web : `"phrase exacte"`, `OR`, `-exclusion`
+- extraits du corps avec les mots trouves surlignes (le contenu des emails reste echappe)
+- filtres : expediteur, destinataire (To/Cc/Bcc), boite mail, plage de dates, pieces jointes
+- pagination qui conserve les filtres
 
 ### Explorateur de threads
-- affichage d'un email
-- reconstitution chronologique de la conversation (racine + reponses)
+- email complet (destinataires, Cc, dossier, pieces jointes)
+- conversation reconstruite, en ordre chronologique, indentee selon le message auquel chacun repond
 
-### Graphe d'influence (optionnel)
-- connexions expediteur -> destinataire les plus frequentes
-- filtre optionnel par utilisateur
+### Graphe d'influence
+- graphe interactif (vis-network) des connexions expediteur -> destinataire les plus frequentes (50 a 500)
+- taille des noeuds selon le PageRank pondere, epaisseur des aretes selon le nombre d'emails
+- classement des acteurs centraux : PageRank, degre, emails envoyes et recus
+- filtre par employe ; double-clic sur un noeud pour voir ses emails
 
 ## 9. Verification rapide post-import
 
 Compter les emails importes:
 
 ```bash
-python3 manage.py shell -c "from polls.models import Email,Employee,Attachment; print('Emails:', Email.objects.count(), 'Employees:', Employee.objects.count(), 'Attachments:', Attachment.objects.count())"
+python3 manage.py shell -c "from discovery.models import Email,Employee,Attachment; print('Emails:', Email.objects.count(), 'Employees:', Employee.objects.count(), 'Attachments:', Attachment.objects.count())"
 ```
 
 Compter les fichiers source:
@@ -220,28 +243,17 @@ Cette regle est appliquee a l'import et au dashboard mensuel pour conserver des 
 
 ## 10. Tests
 
-Le projet contient des tests Django dans `polls/tests.py` pour valider les principales fonctionnalités de l'interface:
+Les tests sont dans `discovery/tests/` :
 
-- page d'accueil (`home`)
-- dashboard (`dashboard`)
-- recherche avancée (`search_emails`)
-- explorateur de threads (`thread_detail`)
-- graphe d'influence (`influence_graph`)
-- liste paginée des emails (`email_list`)
-
-### Lancer les tests
-
-Depuis la racine du projet:
+- `test_views.py` : pages, recherche (FTS, syntaxe, surlignage, filtres, pagination), threads, graphe, cache
+- `test_parsing.py` : sujets, adresses, dates, nettoyage du corps
+- `test_import.py` : import complet sur un mini maildir, idempotence, reconstruction des threads
+- `test_graph.py` : PageRank
 
 ```bash
-source .venv/bin/activate
 docker compose up -d
-python manage.py test polls -v 2
-```
-Exécuter un test spécifique
-
-```bash
-python manage.py test polls.tests.EnronViewsTestCase.test_search_by_keyword_fts -v 2
+python manage.py test discovery -v 2
+python manage.py test discovery.tests.test_import -v 2   # un seul module
 ```
 
 <!-- ## 10. Couverture des objectifs du sujet

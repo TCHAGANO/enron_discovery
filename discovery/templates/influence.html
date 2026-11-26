@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block title %}Graphe d'influence - Enron Discovery{% endblock %}
+
+{% block extra_css %}
+<style>
+    #network { height: 620px; border: 1px solid #dee2e6; border-radius: .5rem; background: #fff; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid py-4 px-4">
+    <h1 class="mb-4">🌐 Graphe d'influence</h1>
+
+    <form method="get" class="row g-3 mb-4">
+        <div class="col-md-5">
+            <input type="text" name="user" class="form-control" placeholder="Adresse email (ou partie) d'un employé" value="{{ user_email }}">
+        </div>
+        <div class="col-md-2">
+            <select name="limit" class="form-select" aria-label="Nombre de connexions">
+                {% for l in limits %}<option value="{{ l }}" {% if l == limit %}selected{% endif %}>{{ l }} connexions</option>{% endfor %}
+            </select>
+        </div>
+        <div class="col-md-2">
+            <button type="submit" class="btn btn-primary">Filtrer</button>
+        </div>
+    </form>
+
+    <p class="text-muted">
+        Les {{ limit }} connexions expéditeur → destinataire les plus fréquentes{% if user_email %} impliquant <strong>{{ user_email }}</strong>{% endif %}.
+        La taille d'un nœud suit son PageRank, l'épaisseur d'une flèche le nombre d'emails. Double-cliquez sur un nœud pour voir ses emails envoyés.
+    </p>
+
+    <div class="row">
+        <div class="col-lg-8 mb-4">
+            {% if nodes %}
+            <div id="network"></div>
+            {% else %}
+            <div class="alert alert-info">Aucune connexion trouvée.</div>
+            {% endif %}
+        </div>
+        <div class="col-lg-4">
+            <h5>Acteurs les plus centraux</h5>
+            <div class="table-responsive">
+                <table class="table table-sm table-hover align-middle">
+                    <thead class="table-light">
+                        <tr><th>Employé</th><th title="PageRank pondéré">PageRank</th><th title="Contacts distincts">Degré</th><th>Env.</th><th>Reçus</th></tr>
+                    </thead>
+                    <tbody>
+                        {% for r in ranking %}
+                        <tr>
+                            <td><a href="?user={{ r.email|urlencode }}&amp;limit={{ limit }}">{{ r.email }}</a></td>
+                            <td>{{ r.pagerank|floatformat:4 }}</td>
+                            <td>{{ r.degree }}</td>
+                            <td>{{ r.sent }}</td>
+                            <td>{{ r.received }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <details class="mt-3">
+        <summary>Tableau des connexions</summary>
+        <div class="table-responsive mt-2">
+            <table class="table table-striped table-hover">
+                <thead class="table-light">
+                    <tr><th>Expéditeur</th><th>Destinataire</th><th>Nombre d'échanges</th></tr>
+                </thead>
+                <tbody>
+                    {% for conn in connections %}
+                    <tr>
+                        <td>{{ conn.from_employee__email }}</td>
+                        <td>{{ conn.to_employees__email }}</td>
+                        <td><span class="badge bg-primary rounded-pill">{{ conn.total }}</span></td>
+                    </tr>
+                    {% empty %}
+                    <tr><td colspan="3" class="text-center">Aucune connexion trouvée.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </details>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+{% if nodes %}
+<script src="https://unpkg.com/vis-network@9.1.9/standalone/umd/vis-network.min.js"></script>
+{{ nodes|json_script:"graph-nodes" }}
+{{ edges|json_script:"graph-edges" }}
+<script>
+    const rawNodes = JSON.parse(document.getElementById('graph-nodes').textContent);
+    const rawEdges = JSON.parse(document.getElementById('graph-edges').textContent);
+    const nodes = new vis.DataSet(rawNodes.map(n => ({
+        ...n,
+        color: n.highlight ? { background: '#e74a3b', border: '#a52a1f' } : { background: '#4e73df', border: '#2e4fb3' },
+    })));
+    const edges = new vis.DataSet(rawEdges.map(e => ({ ...e, arrows: 'to', color: { color: '#adb5bd', highlight: '#4e73df' } })));
+    const network = new vis.Network(document.getElementById('network'), { nodes, edges }, {
+        nodes: { shape: 'dot', scaling: { min: 6, max: 40 }, font: { size: 12 } },
+        edges: { scaling: { min: 1, max: 8 }, smooth: { type: 'continuous' } },
+        physics: { stabilization: { iterations: 200 }, barnesHut: { gravitationalConstant: -6000, springLength: 140 } },
+        interaction: { hover: true, tooltipDelay: 150 },
+    });
+    network.once('stabilizationIterationsDone', () => network.setOptions({ physics: false }));
+    network.on('doubleClick', params => {
+        if (!params.nodes.length) return;
+        const node = nodes.get(params.nodes[0]);
+        const email = node.title.split('\n')[0];
+        window.location = "{% url 'enron:search_emails' %}?sender=" + encodeURIComponent(email);
+    });
+</script>
+{% endif %}
+{% endblock %}

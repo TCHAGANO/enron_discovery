@@ -1,11 +1,12 @@
 from datetime import timedelta
 
-from django.contrib.postgres.search import SearchVector
+from django.core.cache import cache
 from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
-from .models import Email, Employee, Folder
+from discovery.models import Attachment, Email, Employee, Folder
+from discovery.search import update_search_vectors
 
 
 class EnronViewsTestCase(TestCase):
@@ -50,7 +51,8 @@ class EnronViewsTestCase(TestCase):
 
     @classmethod
     def setUpTestData(cls):
-        cls.folder = Folder.objects.create(name="inbox")
+        cls.folder = Folder.objects.create(name="inbox", mailbox="alice-a", path="alice-a/inbox")
+        cls.other_folder = Folder.objects.create(name="inbox", mailbox="bob-b", path="bob-b/inbox")
 
         cls.alice = Employee.objects.create(name="Alice", email="alice@enron.com")
         cls.bob = Employee.objects.create(name="Bob", email="bob@enron.com")
@@ -98,14 +100,18 @@ class EnronViewsTestCase(TestCase):
             message_id="<msg-other@enron>",
             date=now,
             subject="Cafeteria menu",
-            body="Lunch options for next week.",
+            body="Lunch options for next week. <script>alert(1)</script>",
             from_employee=cls.charlie,
-            folder=cls.folder,
+            folder=cls.other_folder,
         )
         cls.other_email.to_employees.add(cls.alice)
 
         # Populate search_vector for FTS tests
-        Email.objects.all().update(search_vector=SearchVector("subject", "body"))
+        Attachment.objects.create(email=cls.other_email, filename="menu.pdf", content_type="application/pdf", size=10)
+        update_search_vectors(Email.objects.all())
+
+    def setUp(self):
+        cache.clear()
 
     def test_home_page(self):
         response = self.client.get(reverse("enron:home"))
@@ -211,3 +217,77 @@ class EnronViewsTestCase(TestCase):
         self.assertIn("emails", response.context)
         self.assertIn("stats", response.context)
         self.assertEqual(response.context["stats"]["total_emails"], 4)
+    # --- Nouvelles fonctionnalites de recherche ---
+
+    def _search_ids(self, **params):
+        response = self.client.get(reverse("enron:search_emails"), params)
+        self.assertEqual(response.status_code, 200)
+        return {e.id for e in self._emails_from_response(response)}, response
+
+    def test_search_highlights_and_escapes(self):
+        ids, response = self._search_ids(q="lunch")
+        self.assertEqual(ids, {self.other_email.id})
+        html = response.content.decode()
+        self.assertIn("<mark>Lunch</mark>", html)
+        self.assertNotIn("<script>alert(1)</script>", html)
+
+    def test_search_websearch_syntax(self):
+        ids, _ = self._search_ids(q="strategy -legal")
+        self.assertEqual(ids, {self.root_email.id, self.reply_1.id})
+        ids, _ = self._search_ids(q="cafeteria OR compliance")
+        self.assertEqual(ids, {self.other_email.id, self.reply_2.id})
+
+    def test_search_stemming_english(self):
+        ids, _ = self._search_ids(q="contract")
+        self.assertIn(self.root_email.id, ids)
+
+    def test_search_by_recipient_has_no_duplicates(self):
+        response = self.client.get(reverse("enron:search_emails"), {"recipient": "alice"})
+        emails = list(self._emails_from_response(response))
+        self.assertEqual(len(emails), len({e.id for e in emails}))
+        self.assertEqual({e.id for e in emails}, {self.reply_1.id, self.reply_2.id, self.other_email.id})
+
+    def test_search_by_mailbox_and_attachments(self):
+        ids, _ = self._search_ids(mailbox="bob-b")
+        self.assertEqual(ids, {self.other_email.id})
+        ids, _ = self._search_ids(attachments="1")
+        self.assertEqual(ids, {self.other_email.id})
+
+    def test_search_invalid_date_does_not_crash(self):
+        _ids, response = self._search_ids(date_from="2001-13-45")
+        self.assertIn("Date de debut invalide.", response.context["errors"])
+
+    def test_search_pagination_keeps_filters(self):
+        for i in range(25):
+            Email.objects.create(
+                message_id=f"<bulk-{i}@enron>", subject="Bulk & co", from_employee=self.alice, folder=self.folder
+            )
+        response = self.client.get(reverse("enron:search_emails"), {"sender": "alice@enron.com"})
+        self.assertTrue(response.context["has_next"])
+        self.assertIn("sender=alice%40enron.com&amp;page=2", response.content.decode())
+
+    def test_influence_graph_ranking_and_nodes(self):
+        response = self.client.get(reverse("enron:influence_graph"), {"limit": "50"})
+        self.assertEqual(response.status_code, 200)
+        ranking = response.context["ranking"]
+        self.assertEqual(ranking[0]["email"], "alice@enron.com")  # tout le monde ecrit a Alice
+        self.assertEqual(len(response.context["nodes"]), 3)
+
+    def test_influence_graph_user_filter(self):
+        response = self.client.get(reverse("enron:influence_graph"), {"user": "bob"})
+        for conn in response.context["connections"]:
+            self.assertTrue("bob" in conn["from_employee__email"] or "bob" in conn["to_employees__email"])
+
+    def test_thread_detail_uses_reconstructed_thread(self):
+        from discovery.threads import build_threads
+
+        build_threads()
+        response = self.client.get(reverse("enron:thread_detail", args=[self.reply_1.id]))
+        conversation_ids = [e.id for e in response.context["conversation"]]
+        self.assertEqual(conversation_ids[:2], [self.root_email.id, self.reply_1.id])
+        self.assertNotIn(self.other_email.id, conversation_ids)
+
+    def test_dashboard_is_cached(self):
+        self.client.get(reverse("enron:dashboard"))
+        with self.assertNumQueries(0):
+            self.client.get(reverse("enron:dashboard"))
