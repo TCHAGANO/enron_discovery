@@ -59,6 +59,10 @@ class ImportCommandTests(TestCase):
         # meme sujet mais autres personnes : autre conversation
         _write(root, "lay-k/inbox/2.", _mail("<d@x>", "Tue, 15 May 2001 09:00:00 -0700", "sherron.watkins@enron.com",
                                              "vince.kaminski@enron.com", "RE: Raptor", "Autre fil."))
+        # lettre d'information : meme sujet, memes personnes, sans RE: -> pas de thread
+        for i in (5, 6):
+            _write(root, f"lay-k/inbox/{i}.", _mail(f"<news{i}@x>", f"Wed, {i + 11} May 2001 08:00:00 -0700",
+                                                   "news@enron.com", "kenneth.lay@enron.com", "Enron Mentions", "..."))
         _write(root, "lay-k/inbox/3.", MULTIPART)
         _write(root, "lay-k/inbox/4.", "From: x@enron.com\nSubject: sans id\n\ncorps")
 
@@ -72,7 +76,7 @@ class ImportCommandTests(TestCase):
 
     def test_import_creates_everything(self):
         self._import()
-        self.assertEqual(Email.objects.count(), 7)
+        self.assertEqual(Email.objects.count(), 9)
         self.assertTrue(Folder.objects.filter(path="lay-k/inbox", mailbox="lay-k", name="inbox").exists())
         self.assertEqual(Folder.objects.filter(name="inbox").count(), 3)
         self.assertEqual(Employee.objects.get(email="kenneth.lay@enron.com").sent_emails.count(), 3)
@@ -84,7 +88,7 @@ class ImportCommandTests(TestCase):
     def test_import_is_idempotent(self):
         self._import()
         out = self._import()
-        self.assertEqual(Email.objects.count(), 7)
+        self.assertEqual(Email.objects.count(), 9)
         self.assertIn("importes=0", out)
 
     def test_threads_are_rebuilt(self):
@@ -96,7 +100,8 @@ class ImportCommandTests(TestCase):
         self.assertEqual(a.thread_id, b.thread_id)
         self.assertEqual(copy.thread_id, b.thread_id)
         self.assertNotEqual(d.thread_id, b.thread_id)
-        self.assertEqual(Thread.objects.get(id=b.thread_id).email_count, 3)
+        self.assertEqual(Thread.objects.get(id=b.thread_id).email_count, 2)  # a et sa copie comptent pour 1
+        self.assertFalse(Email.objects.filter(subject="Enron Mentions").exclude(thread=None).exists())
 
     def test_build_threads_is_idempotent(self):
         self._import()

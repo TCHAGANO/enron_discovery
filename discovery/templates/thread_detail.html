@@ -33,7 +33,7 @@
 
     <h4 class="mb-1">Conversation complète</h4>
     <p class="text-muted small mb-3">
-        {{ conversation|length }} message(s){% if selected.thread %}, du {{ selected.thread.started_at|date:"d M Y" }} au {{ selected.thread.last_activity|date:"d M Y" }}{% endif %}.
+        {{ conversation|length }} message(s) distinct(s){% if selected.thread %}, du {{ selected.thread.started_at|date:"d M Y" }} au {{ selected.thread.last_activity|date:"d M Y" }}{% endif %}.
         Le décalage indique à quel message chacun répond.
     </p>
     <div class="list-group">

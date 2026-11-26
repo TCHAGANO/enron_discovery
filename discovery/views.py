@@ -217,10 +217,21 @@ def _thread_conversation(selected):
         .prefetch_related("to_employees")
         .order_by("date", "id")
     )
+    # une seule copie par email (meme expediteur, meme date), en gardant
+    # celle qui est affichee
+    def copy_key(e):
+        return (e.from_employee_id, e.date) if e.date else ("id", e.id)
+
+    copies = {}
+    for e in emails:
+        if copy_key(e) not in copies or e.id == selected.id:
+            copies[copy_key(e)] = e
+    kept_id = {e.id: copies[copy_key(e)].id for e in emails}  # copie -> copie affichee
+    emails = [e for e in emails if kept_id[e.id] == e.id]
     depth = {}
     ids = {e.id for e in emails}
     for e in emails:
-        parent = e.in_reply_to_id
+        parent = kept_id.get(e.in_reply_to_id, e.in_reply_to_id)
         depth[e.id] = depth.get(parent, -1) + 1 if parent in ids else 0
     return emails[0], [(e, min(depth[e.id], 8)) for e in emails]
 

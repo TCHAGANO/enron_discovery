@@ -2,7 +2,7 @@ from email import message_from_bytes
 
 from django.test import SimpleTestCase
 
-from discovery.parsing import clean_body, normalize_subject, parse_addresses, parse_email_date, parse_message
+from discovery.parsing import clean_body, is_reply_subject, normalize_subject, parse_addresses, parse_email_date, parse_message
 
 RAW = b"""Message-ID: <123.JavaMail.evans@thyme>
 Date: Mon, 14 May 2001 16:39:00 -0700 (PDT)
@@ -27,6 +27,12 @@ class ParsingTests(SimpleTestCase):
         self.assertEqual(normalize_subject("Re[2]: FWD: Hello"), "hello")
         self.assertEqual(normalize_subject("Reorganisation"), "reorganisation")
         self.assertEqual(normalize_subject(""), "")
+
+    def test_is_reply_subject(self):
+        self.assertTrue(is_reply_subject("RE: x"))
+        self.assertTrue(is_reply_subject("Fw: x"))
+        self.assertFalse(is_reply_subject("Reorg"))
+        self.assertFalse(is_reply_subject(""))
 
     def test_parse_addresses_dedup_and_lowercase(self):
         self.assertEqual(

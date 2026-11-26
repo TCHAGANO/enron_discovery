@@ -110,8 +110,8 @@ Commande principale: `python manage.py import_enron --path /chemin/vers/maildir`
 - parcours recursif du maildir ; le dossier garde la boite mail d'origine (`lay-k/inbox`)
 - extraction `From` (et nom complet via `X-From`), `To`, `Cc`, `Bcc`, `Date`, `Subject`, `Message-ID`, `In-Reply-To`
 - decodage selon le charset declare, nettoyage du corps (messages cites, signatures, mentions legales ; les blocs "Forwarded by" sont conserves)
-- insertion **par lots** (`bulk_create`) avec cache memoire des employes et dossiers : quelques requetes par lot au lieu de plusieurs dizaines par email (environ 18 fois plus rapide sur nos essais)
-- index plein texte calcule en une seule requete a la fin (sujet poids A, corps poids B, configuration `english`)
+- insertion **par lots** (`bulk_create`) avec cache memoire des employes et dossiers : quelques requetes par lot au lieu de plusieurs dizaines par email (sur le corpus complet : 517 401 emails importes en 6 min 20, puis index plein texte et conversations, environ 15 min au total)
+- index plein texte calcule a la fin, par tranches de 20 000 emails (seuls les 100 000 premiers caracteres d'un corps sont indexes : PostgreSQL limite un tsvector a 1 Mo et quelques emails depassent 2 Mo) (sujet poids A, corps poids B, configuration `english`)
 - reconstruction des conversations a la fin (voir ci-dessous)
 - import idempotent/incremental : les Message-ID deja en base sont ignores. Sans Message-ID, l'identifiant de repli est le chemin du fichier.
 
@@ -123,8 +123,12 @@ Le corpus Enron ne contient presque jamais d'en-tete `In-Reply-To`.
 `python manage.py build_threads` (lance automatiquement apres l'import) :
 
 1. resout les en-tetes `In-Reply-To` en SQL, une fois tout importe (l'ordre d'import n'a plus d'importance) ;
-2. regroupe les emails de meme sujet normalise qui partagent au moins un participant et sont espaces de moins de 60 jours ;
-3. deduit le parent de chaque reponse : le message precedent dont l'expediteur etait destinataire, sinon le dernier message du fil. Les copies d'un meme email dans plusieurs boites ne sont pas comptees comme des reponses.
+2. un email dont le sujet commence par RE:/FW: rejoint la conversation precedente de meme sujet normalise s'il partage au moins un participant avec elle et arrive moins de 60 jours apres son dernier message ;
+3. un email sans prefixe ouvre toujours une nouvelle conversation : les lettres d'information et alertes automatiques au sujet identique ("Enron Mentions", "Schedule Crawler"...) ne sont pas fusionnees ;
+4. les copies d'un meme email (meme expediteur, meme date) rangees dans plusieurs dossiers (`sent`, `sent_items`, `all_documents`...) sont rattachees au meme fil mais comptees une seule fois, et un fil fait de simples copies n'est pas une conversation ;
+5. le parent de chaque reponse est le message precedent dont l'expediteur etait destinataire, sinon le dernier message du fil.
+
+Sur le corpus complet (517 401 emails, aucun en-tete In-Reply-To), on obtient environ 30 600 conversations.
 
 La commande est idempotente ; les liens deduits sont marques `in_reply_to_inferred`.
 
@@ -205,7 +209,7 @@ utilisateur `enron`, port hote `5433`). Avec `DJANGO_DEBUG=False`,
 ### Moteur de recherche avancee
 - recherche plein texte PostgreSQL, syntaxe type moteur web : `"phrase exacte"`, `OR`, `-exclusion`
 - extraits du corps avec les mots trouves surlignes (le contenu des emails reste echappe)
-- filtres : expediteur, destinataire (To/Cc/Bcc), boite mail, plage de dates, pieces jointes
+- filtres : expediteur, destinataire (To/Cc/Bcc), boite mail, plage de dates, pieces jointes (la version CMU du corpus ne contient plus les pieces jointes : ce filtre ne sert qu'avec d'autres sources)
 - pagination qui conserve les filtres
 
 ### Explorateur de threads
@@ -214,7 +218,8 @@ utilisateur `enron`, port hote `5433`). Avec `DJANGO_DEBUG=False`,
 
 ### Graphe d'influence
 - graphe interactif (vis-network) des connexions expediteur -> destinataire les plus frequentes (50 a 500)
-- taille des noeuds selon le PageRank pondere, epaisseur des aretes selon le nombre d'emails
+- chaque email n'est compte qu'une fois meme s'il est copie dans plusieurs dossiers
+- taille des noeuds selon le PageRank pondere, calcule sur les 5 000 connexions principales ; epaisseur des aretes selon le nombre d'emails
 - classement des acteurs centraux : PageRank, degre, emails envoyes et recus
 - filtre par employe ; double-clic sur un noeud pour voir ses emails
 

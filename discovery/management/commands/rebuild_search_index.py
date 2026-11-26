@@ -16,5 +16,5 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         qs = Email.objects.filter(search_vector__isnull=True) if options["missing_only"] else Email.objects.all()
-        count = update_search_vectors(qs)
+        count = update_search_vectors(qs, log=self.stdout.write)
         self.stdout.write(self.style.SUCCESS(f"{count} emails indexes (config '{search_config()}')"))

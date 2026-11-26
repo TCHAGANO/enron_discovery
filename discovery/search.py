@@ -2,6 +2,7 @@
 
 from django.conf import settings
 from django.contrib.postgres.search import SearchHeadline, SearchQuery, SearchRank, SearchVector
+from django.db.models.functions import Left
 from django.utils.html import escape
 from django.utils.safestring import mark_safe
 
@@ -9,6 +10,11 @@ from .models import Email
 
 _HL_START = "\x02"
 _HL_STOP = "\x03"
+
+# Un tsvector PostgreSQL est limite a 1 Mo. Quelques emails du corpus depassent
+# 2 Mo (listes, rapports colles) : on n'indexe que le debut de leur corps.
+MAX_INDEXED_BODY_CHARS = 100_000
+INDEX_CHUNK_SIZE = 20_000
 
 
 def search_config():
@@ -18,14 +24,28 @@ def search_config():
 def email_search_vector():
     """Le sujet pese plus lourd (A) que le corps (B) dans le classement."""
     config = search_config()
-    return SearchVector("subject", weight="A", config=config) + SearchVector("body", weight="B", config=config)
+    return SearchVector(Left("subject", 2000), weight="A", config=config) + SearchVector(
+        Left("body", MAX_INDEXED_BODY_CHARS), weight="B", config=config
+    )
 
 
-def update_search_vectors(queryset=None):
-    """Calcule search_vector en une seule requete UPDATE. Renvoie le nombre de lignes."""
+def update_search_vectors(queryset=None, log=None):
+    """
+    Calcule search_vector par tranches d'ids (une requete UPDATE par tranche).
+    Renvoie le nombre de lignes mises a jour.
+    """
     if queryset is None:
         queryset = Email.objects.filter(search_vector__isnull=True)
-    return queryset.update(search_vector=email_search_vector())
+    ids = list(queryset.order_by("id").values_list("id", flat=True))
+    total = 0
+    for start in range(0, len(ids), INDEX_CHUNK_SIZE):
+        chunk = ids[start : start + INDEX_CHUNK_SIZE]
+        total += Email.objects.filter(id__gte=chunk[0], id__lte=chunk[-1], id__in=chunk).update(
+            search_vector=email_search_vector()
+        )
+        if log:
+            log(f"Index plein texte: {total}/{len(ids)}")
+    return total
 
 
 def build_query(text):

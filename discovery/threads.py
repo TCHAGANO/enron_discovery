@@ -6,9 +6,12 @@ donc deux sources :
 
 1. les en-tetes In-Reply-To, resolus en SQL une fois tous les emails importes
    (l'ordre d'import n'a donc plus d'importance) ;
-2. une heuristique : deux emails appartiennent a la meme conversation s'ils
-   ont le meme sujet normalise (sans RE:/FW:), partagent au moins un
-   participant et sont separes de moins de THREAD_WINDOW.
+2. une heuristique : un email dont le sujet commence par RE:/FW: rejoint la
+   conversation precedente de meme sujet normalise s'il partage au moins un
+   participant avec elle et arrive moins de THREAD_WINDOW apres son dernier
+   message. Un email sans prefixe ouvre toujours une nouvelle conversation :
+   les lettres d'information et alertes automatiques au sujet identique ne
+   sont donc pas fusionnees.
 
 Pour chaque email rattache sans In-Reply-To, le parent deduit est le message
 precedent du thread dont l'expediteur courant etait destinataire (une vraie
@@ -23,6 +26,7 @@ from datetime import timedelta
 from django.db import connection, transaction
 
 from .models import Email, Thread
+from .parsing import is_reply_subject
 
 THREAD_WINDOW = timedelta(days=60)
 BATCH_SIZE = 5000
@@ -35,6 +39,7 @@ class _Msg:
     sender: int
     recipients: set
     parent: int | None
+    is_reply: bool = False  # sujet commencant par RE:/FW:
     inferred: bool = False
 
 
@@ -97,12 +102,19 @@ def cluster_group(messages):
     """
     clusters = []
     by_id = {}
+    by_copy_key = {}  # (expediteur, date) -> cluster : copies d'un meme email
     for msg in messages:
         participants = {msg.sender} | msg.recipients
+        copy_key = (msg.sender, msg.date) if msg.date else None
         target = None
         if msg.parent is not None and msg.parent in by_id:
             target = by_id[msg.parent]
-        else:
+        elif copy_key in by_copy_key:
+            target = by_copy_key[copy_key]
+        elif msg.is_reply:
+            # Seuls les RE:/FW: rejoignent une conversation existante : les
+            # lettres d'information et alertes automatiques qui reprennent le
+            # meme sujet restent des messages isoles.
             for cluster in reversed(clusters):
                 if cluster.participants & participants and _is_within_window(cluster, msg):
                     target = cluster
@@ -117,6 +129,8 @@ def cluster_group(messages):
 
         target.add(msg)
         by_id[msg.id] = target
+        if copy_key:
+            by_copy_key.setdefault(copy_key, target)
     return clusters
 
 
@@ -136,14 +150,20 @@ def _flush(group_subject, messages, original_parents, stats, pending_threads):
     if len(messages) < 2:
         return
     for cluster in cluster_group(messages):
-        if len(cluster.messages) < 2:
+        # Les copies d'un meme email (meme expediteur, meme date) dans
+        # plusieurs dossiers ne font pas une conversation.
+        distinct = {(m.sender, m.date) if m.date else ("id", m.id) for m in cluster.messages}
+        if len(distinct) < 2:
+            for msg in cluster.messages:
+                if msg.inferred:
+                    msg.parent, msg.inferred = original_parents[msg.id], False
             continue
         dates = [m.date for m in cluster.messages if m.date]
         thread = Thread(
             normalized_subject=group_subject,
             started_at=min(dates) if dates else None,
             last_activity=max(dates) if dates else None,
-            email_count=len(cluster.messages),
+            email_count=len(distinct),
         )
         pending_threads.append((thread, cluster.messages))
         stats["threads"] += 1
@@ -188,7 +208,7 @@ def build_threads(log=None):
         rows = (
             Email.objects.exclude(normalized_subject="")
             .order_by("normalized_subject", "date", "id")
-            .values_list("id", "normalized_subject", "date", "from_employee_id", "in_reply_to_id")
+            .values_list("id", "normalized_subject", "date", "from_employee_id", "in_reply_to_id", "subject")
             .iterator(chunk_size=BATCH_SIZE)
         )
 
@@ -200,11 +220,11 @@ def build_threads(log=None):
             recipients = _recipients_for(ids)
             pending_threads = []
             current_subject, current, original = None, [], {}
-            for subject, (eid, _s, date, sender, parent) in batch_rows:
+            for subject, (eid, _s, date, sender, parent, raw_subject) in batch_rows:
                 if subject != current_subject:
                     _flush(current_subject, current, original, stats, pending_threads)
                     current_subject, current, original = subject, [], {}
-                current.append(_Msg(eid, date, sender, recipients[eid], parent))
+                current.append(_Msg(eid, date, sender, recipients[eid], parent, is_reply_subject(raw_subject)))
                 original[eid] = parent
             _flush(current_subject, current, original, stats, pending_threads)
             _save(pending_threads)

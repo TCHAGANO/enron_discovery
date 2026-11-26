@@ -49,6 +49,11 @@ def normalize_subject(subject):
     return _WHITESPACE_RE.sub(" ", subject).strip().lower()
 
 
+def is_reply_subject(subject):
+    """True si le sujet commence par un prefixe de reponse ou de transfert."""
+    return bool(subject) and _SUBJECT_PREFIX_RE.match(subject) is not None
+
+
 def parse_addresses(*headers):
     """Liste de (adresse, nom) en minuscules, sans doublons, ordre conserve."""
     seen = set()

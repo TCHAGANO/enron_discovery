@@ -183,7 +183,7 @@ class Command(BaseCommand):
 
         if not options["skip_index"]:
             self.stdout.write("Calcul de l'index plein texte...")
-            indexed = update_search_vectors()
+            indexed = update_search_vectors(log=self.stdout.write)
             self.stdout.write(f"Emails indexes: {indexed}")
 
         if not options["skip_threads"]:

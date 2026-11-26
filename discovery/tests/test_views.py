@@ -291,3 +291,13 @@ class EnronViewsTestCase(TestCase):
         self.client.get(reverse("enron:dashboard"))
         with self.assertNumQueries(0):
             self.client.get(reverse("enron:dashboard"))
+
+    def test_very_long_body_can_be_indexed(self):
+        # tsvector limite a 1 Mo : un corps de plusieurs Mo ne doit pas bloquer l'index
+        big = Email.objects.create(
+            message_id="<big@enron>", subject="Huge report", body="word%d " * 400000 % tuple(range(400000)),
+            from_employee=self.alice, folder=self.folder,
+        )
+        update_search_vectors(Email.objects.filter(id=big.id))
+        big.refresh_from_db()
+        self.assertIsNotNone(big.search_vector)

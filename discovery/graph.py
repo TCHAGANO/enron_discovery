@@ -2,6 +2,9 @@
 
 from collections import defaultdict
 
+from django.conf import settings
+from django.core.cache import cache
+
 from django.db.models import Count, F, Q
 
 from .models import Email, Employee
@@ -11,6 +14,9 @@ def top_edges(limit=100, user=""):
     """
     Les `limit` paires (expediteur, destinataire) les plus frequentes.
     Requete directe sur la table de liaison To, sans passer par Email x M2M.
+    Un meme email est souvent present dans plusieurs dossiers (sent,
+    sent_items, all_documents...) : on compte les dates d'envoi distinctes
+    pour ne compter chaque email qu'une fois.
     Renvoie une liste de dicts {source, target, total} (ids d'employes).
     """
     through = Email.to_employees.through
@@ -19,7 +25,7 @@ def top_edges(limit=100, user=""):
         qs = qs.filter(Q(email__from_employee__email__icontains=user) | Q(employee__email__icontains=user))
     rows = (
         qs.values(source=F("email__from_employee_id"), target=F("employee_id"))
-        .annotate(total=Count("id"))
+        .annotate(total=Count("email__date", distinct=True))
         .order_by("-total", "source", "target")[:limit]
     )
     return list(rows)
@@ -51,13 +57,42 @@ def pagerank(edges, damping=0.85, iterations=100, tol=1e-9):
     return rank
 
 
+# Le PageRank est calcule sur un graphe large (les RANK_EDGES connexions les
+# plus frequentes) : sur les seules aretes affichees, les feuilles d'une etoile
+# obtiendraient un score artificiellement eleve.
+RANK_EDGES = 5000
+
+
+def global_metrics():
+    """PageRank, emails envoyes/recus et degre sur le graphe large (en cache)."""
+
+    def compute():
+        edges = top_edges(limit=RANK_EDGES)
+        sent, received, contacts = defaultdict(int), defaultdict(int), defaultdict(set)
+        for e in edges:
+            sent[e["source"]] += e["total"]
+            received[e["target"]] += e["total"]
+            contacts[e["source"]].add(e["target"])
+            contacts[e["target"]].add(e["source"])
+        return {
+            "pagerank": pagerank(edges),
+            "sent": dict(sent),
+            "received": dict(received),
+            "degree": {k: len(v) for k, v in contacts.items()},
+        }
+
+    return cache.get_or_set("graph:global_metrics", compute, settings.STATS_CACHE_SECONDS)
+
+
 def build_graph(limit=100, user=""):
     """Donnees pretes pour le template : noeuds, aretes, classement."""
     edges = top_edges(limit=limit, user=user)
     ids = {e["source"] for e in edges} | {e["target"] for e in edges}
     people = {p.id: p for p in Employee.objects.filter(id__in=ids)}
-    ranks = pagerank(edges)
+    metrics = global_metrics()
+    ranks = {pid: metrics["pagerank"].get(pid, 0.0) for pid in ids}
 
+    # sur le graphe affiche, a defaut de valeur globale
     sent = defaultdict(int)
     received = defaultdict(int)
     contacts = defaultdict(set)
@@ -74,9 +109,9 @@ def build_graph(limit=100, user=""):
                 "email": people[pid].email,
                 "name": people[pid].name,
                 "pagerank": ranks.get(pid, 0.0),
-                "sent": sent[pid],
-                "received": received[pid],
-                "degree": len(contacts[pid]),
+                "sent": metrics["sent"].get(pid, sent[pid]),
+                "received": metrics["received"].get(pid, received[pid]),
+                "degree": metrics["degree"].get(pid, len(contacts[pid])),
             }
             for pid in ids
             if pid in people
