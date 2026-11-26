@@ -110,3 +110,18 @@ class ImportCommandTests(TestCase):
         call_command("build_threads", stdout=StringIO())
         self.assertEqual(sorted(Email.objects.values_list("id", "in_reply_to_id")), first)
         self.assertEqual(Thread.objects.count(), 1)
+
+
+class WindowsPathTests(TestCase):
+    def test_trailing_dot_kept_on_windows(self):
+        from unittest import mock
+
+        from discovery.management.commands import import_enron
+
+        with mock.patch.object(import_enron.os, "name", "nt"):
+            self.assertEqual(
+                import_enron.os_path(r"C:\Users\x\maildir\allen-p\inbox\1."),
+                r"\\?\C:\Users\x\maildir\allen-p\inbox\1.",
+            )
+            self.assertEqual(import_enron.os_path(r"\\srv\share\1."), r"\\?\UNC\srv\share\1.")
+        self.assertEqual(import_enron.os_path("/data/maildir/1."), "/data/maildir/1.")

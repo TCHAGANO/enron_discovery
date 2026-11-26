@@ -24,6 +24,26 @@ from discovery.threads import build_threads
 UNKNOWN_SENDER = "unknown@enron.local"
 
 
+def os_path(path):
+    """
+    Chemin utilisable par open().
+
+    Les fichiers du corpus s'appellent "1.", "2."... Sous Windows, un point
+    final est retire des chemins classiques ("1." devient "1"), d'ou des
+    erreurs "No such file or directory". Le prefixe de chemin etendu Windows desactive cette
+    normalisation.
+    """
+    # `path` est deja absolu (os.walk sur un chemin absolu). Ne pas appeler
+    # os.path.abspath ici : sous Windows, il retirerait lui aussi le point final.
+    if os.name != "nt":
+        return path
+    if path.startswith("\\\\?\\"):
+        return path
+    if path.startswith("\\\\"):  # chemin reseau \\serveur\partage
+        return "\\\\?\\UNC\\" + path[2:]
+    return "\\\\?\\" + path
+
+
 class Command(BaseCommand):
     help = "Import des emails du corpus Enron (incremental, par lots)"
 
@@ -152,7 +172,7 @@ class Command(BaseCommand):
                 stats["processed"] += 1
                 filepath = os.path.join(directory, filename)
                 try:
-                    with open(filepath, "rb") as fh:
+                    with open(os_path(filepath), "rb") as fh:
                         msg = email.message_from_binary_file(fh)
                     # Repli sur le chemin relatif : les noms de fichier ("1.", "2."...)
                     # se repetent d'un dossier a l'autre.
